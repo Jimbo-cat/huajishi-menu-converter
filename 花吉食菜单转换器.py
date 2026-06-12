@@ -31,7 +31,7 @@ BREAKFAST_BOXES = {
     '煎炸':  '文本框 52',     # 煎饼类
     '蛋类':  '文本框 51',     # 蛋类
     '西点':  '文本框 43',     # 面包/蛋糕
-    '粗粮':  '文本框 1',      # 玉米/红薯
+    '粗粮':  '文本框 9',      # 玉米/红薯
 }
 # ── 午餐区 ──
 LUNCH_BOXES = {
@@ -497,6 +497,27 @@ def _read_run_style(run):
         pass
     style['scheme_clr'] = scheme_clr
 
+    # 主题色的亮度修饰（lumMod/lumOff）— 如 tx1 的 lumMod 65000 + lumOff 35000 = 灰色
+    lum_mod = None
+    lum_off = None
+    try:
+        rPr = run._r.find(qn('a:rPr'))
+        if rPr is not None:
+            fill = rPr.find(qn('a:solidFill'))
+            if fill is not None:
+                scheme = fill.find(qn('a:schemeClr'))
+                if scheme is not None:
+                    lm = scheme.find(qn('a:lumMod'))
+                    if lm is not None:
+                        lum_mod = lm.get('val')
+                    lo = scheme.find(qn('a:lumOff'))
+                    if lo is not None:
+                        lum_off = lo.get('val')
+    except Exception:
+        pass
+    style['lum_mod'] = lum_mod
+    style['lum_off'] = lum_off
+
     return style
 
 
@@ -548,6 +569,13 @@ def _apply_run_style(run, style):
             fill = etree.SubElement(rPr, qn('a:solidFill'))
             scheme = etree.SubElement(fill, qn('a:schemeClr'))
             scheme.set('val', style['scheme_clr'])
+            # 恢复亮度修饰（如 tx1 的 lumMod 65000 + lumOff 35000 = 灰色）
+            if style.get('lum_mod'):
+                lm = etree.SubElement(scheme, qn('a:lumMod'))
+                lm.set('val', str(style['lum_mod']))
+            if style.get('lum_off'):
+                lo = etree.SubElement(scheme, qn('a:lumOff'))
+                lo.set('val', str(style['lum_off']))
         except Exception:
             pass
     # 没有颜色信息 → 保持 run 原有颜色不变
@@ -644,6 +672,8 @@ def generate_pptx(excel_path, output_path, template_path=None):
                 mian_style = {k: v for k, v in split_styles[0].items()}
                 mian_style['scheme_clr'] = 'accent2'  # 面档用橙色主题色
                 mian_style['color_rgb'] = None         # 清除可能残留的 RGB
+                mian_style['lum_mod'] = None           # accent2 不需要 tx1 的亮度修饰
+                mian_style['lum_off'] = None
                 split_count = len(breakfast['面档'])
                 color_split = [(split_count, mian_style),
                                (len(breakfast['湿点']), split_styles[1])]
@@ -793,10 +823,10 @@ class MenuConverterApp:
         info_box.insert(tk.END, "① 点击「浏览…」选择花吉食菜单.xlsx\n\n")
         info_box.insert(tk.END, "② 右侧选择输出目录\n\n")
         info_box.insert(tk.END, "③ 点击中间「确认生成」按钮\n\n")
-        info_box.insert(tk.END, "④ 程序会自动生成 5 页 PPTX\n   （周一 ~ 周五）")
+        info_box.insert(tk.END, "④ 程序会自动生成 5 页 PPTX\n   （周一至周五）")
         info_box.config(state=tk.DISABLED)
 
-        # ── 中间虚线 + 按钮 ──
+        # ── 中间虚线 ──
         center_frame = ttk.Frame(content_frame, width=30)
         center_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
         center_frame.pack_propagate(False)
@@ -805,10 +835,6 @@ class MenuConverterApp:
         canvas = tk.Canvas(center_frame, width=2, height=280, highlightthickness=0)
         canvas.pack(expand=True)
         canvas.create_line(1, 0, 1, 280, dash=(4, 4), fill='#999999')
-
-        # 按钮
-        ttk.Button(center_frame, text="确认生成", command=self._generate,
-                   style='Generate.TButton').pack(pady=(10, 0))
 
         # ── 右侧面板：输出设置 ──
         right_frame = ttk.LabelFrame(content_frame, text="💾 输出设置", padding=15)
@@ -834,6 +860,13 @@ class MenuConverterApp:
                                     state=tk.DISABLED)
         self.status_text.pack(fill=tk.BOTH, expand=True)
 
+        # 生成按钮（放在右下角）
+        btn_frame = ttk.Frame(right_frame)
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
+        self.generate_btn = ttk.Button(btn_frame, text="确认生成", command=self._generate,
+                                       style='Generate.TButton')
+        self.generate_btn.pack(side=tk.RIGHT)
+
         # ── 底部说明 ──
         bottom_label = ttk.Label(main_frame, text="基于模板生成菜单 | 支持 早餐/午餐/晚餐 按分类自动填入",
                                  font=('PingFang SC', 9), foreground='#888888')
@@ -841,7 +874,7 @@ class MenuConverterApp:
 
         # ── 按钮样式 ──
         style = ttk.Style()
-        style.configure('Generate.TButton', font=('PingFang SC', 11, 'bold'), padding=(5, 5))
+        style.configure('Generate.TButton', font=('PingFang SC', 14, 'bold'), padding=(20, 10))
 
     def _center_window(self):
         self.root.update_idletasks()
