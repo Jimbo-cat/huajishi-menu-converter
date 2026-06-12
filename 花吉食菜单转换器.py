@@ -125,70 +125,157 @@ def extract_day_data(ws_breakfast, ws_lunch, day_index):
     return breakfast, lunch, dinner
 
 
-def set_textbox_content(text_frame, items, separator='\n'):
+def set_textbox_content(text_frame, items):
     """
-    替换文本框内容，保留原有字体格式（从首个 run 继承字体属性）。
+    替换文本框内容，保留原有字体/字号/颜色/加粗/东亚字体。
     items: 字符串列表，每个元素成为新的一行（段落）。
+    策略：模板的每个段落原本可能有不同颜色，逐个段落读取其样式并保留。
     """
-    # 清空所有段落
+    from pptx.oxml.ns import qn
+    from pptx.dml.color import RGBColor
+
+    # 先扫描模板各段落，记录每个段落的原始样式
+    orig_styles = []
+    for para in text_frame.paragraphs:
+        r = para.runs[0] if para.runs else None
+        if r and r.text.strip():
+            # 有内容的段落 - 读取其样式
+            style = _read_run_style(r)
+            orig_styles.append(style)
+        elif r:
+            # 空白段落 - 也读取，但标记为空白
+            style = _read_run_style(r)
+            orig_styles.append(style)
+        else:
+            orig_styles.append(None)
+
+    # 如果没有扫描到任何样式，用第一个段落（即使空白）
+    if not orig_styles:
+        for para in text_frame.paragraphs:
+            if para.runs:
+                orig_styles.append(_read_run_style(para.runs[0]))
+            else:
+                para.add_run()
+                orig_styles.append(_read_run_style(para.runs[0]))
+
+    # 如果还是没样式，加一个默认样式
+    if not orig_styles:
+        para = text_frame.add_paragraph()
+        para.add_run()
+        orig_styles.append({'font_name': None, 'ea_font': None,
+                           'size': None, 'bold': None, 'color_rgb': None})
+
+    # ── 写入内容 ──
+    # 清空现有段落
     for para in text_frame.paragraphs:
         for run in para.runs:
             run.text = ''
 
-    # 获取第一个段落的第一个 run 作为格式模板
-    first_para = text_frame.paragraphs[0] if text_frame.paragraphs else text_frame.add_paragraph()
-    if not first_para.runs:
-        first_para.add_run()
-    template_run = first_para.runs[0]
-
-    # 记录原本属性
-    orig_font_name = template_run.font.name
-    orig_font_size = template_run.font.size
-    orig_bold = template_run.font.bold
-
-    # 设置第一行的内容
-    template_run.text = items[0] if items else ''
-
-    # 处理剩余行
     current_para_idx = 0
     for i, item in enumerate(items):
-        # 找或创建段落
-        if i == 0:
-            para = first_para
-        else:
-            current_para_idx += 1
-            if current_para_idx < len(text_frame.paragraphs):
-                para = text_frame.paragraphs[current_para_idx]
-            else:
-                para = text_frame.add_paragraph()
-
-            # 清空此段落中的现有 runs
+        # 获取或创建段落
+        if i < len(text_frame.paragraphs):
+            para = text_frame.paragraphs[i]
+            # 清空此段落
             for r in para.runs:
                 r.text = ''
-            if not para.runs:
-                new_run = para.add_run()
-                new_run.text = ''
+        else:
+            para = text_frame.add_paragraph()
 
-        # 设置文本
+        # 确保至少有一个 run
+        if not para.runs:
+            para.add_run()
+
+        # 用第一个 run 来写文本
         run = para.runs[0]
         run.text = str(item)
 
-        # 恢复字体属性
-        if orig_font_name:
-            run.font.name = orig_font_name
-        if orig_font_size:
-            run.font.size = orig_font_size
-        run.font.bold = orig_bold
+        # 应用样式：优先用对应段落的原始样式，如果越界则用最后一个
+        style_idx = min(i, len(orig_styles) - 1) if orig_styles else 0
+        style = orig_styles[style_idx] if style_idx < len(orig_styles) else orig_styles[-1]
+        if style:
+            _apply_run_style(run, style)
 
-    # 隐藏多余段落
+    # 隐藏多余的段落（清空但不删除，保持段落结构）
     for j in range(len(items), len(text_frame.paragraphs)):
         p = text_frame.paragraphs[j]
         for r in p.runs:
             r.text = ''
-        # 加一个空 run 以防彻底空白导致问题
+        # 确保每个多余段落至少有一个空 run
         if not p.runs:
-            new_p = p.add_run()
-            new_p.text = ''
+            p.add_run()
+
+
+def _read_run_style(run):
+    """读取 run 的完整样式"""
+    from pptx.oxml.ns import qn
+    from pptx.dml.color import RGBColor
+
+    style = {}
+    style['font_name'] = run.font.name  # Latin font
+
+    # 东亚字体（从 XML 读 ea 标签）
+    ea_font = None
+    try:
+        rPr = run._r.find(qn('a:rPr'))
+        if rPr is not None:
+            ea = rPr.find(qn('a:ea'))
+            if ea is not None:
+                ea_font = ea.get('typeface')
+    except Exception:
+        pass
+    style['ea_font'] = ea_font
+
+    style['size'] = run.font.size
+    style['bold'] = run.font.bold
+
+    # 字体颜色
+    color_rgb = None
+    try:
+        c = run.font.color
+        if c and c.type is not None:
+            color_rgb = str(c.rgb)
+    except Exception:
+        pass
+    style['color_rgb'] = color_rgb
+
+    return style
+
+
+def _apply_run_style(run, style):
+    """将样式应用到 run"""
+    from pptx.oxml.ns import qn
+    from pptx.dml.color import RGBColor
+
+    # Latin 字体
+    if style.get('font_name'):
+        run.font.name = style['font_name']
+
+    # 东亚字体（通过 XML 设置 ea 标签）
+    if style.get('ea_font'):
+        try:
+            rPr = run._r.get_or_add_rPr()
+            ea = rPr.find(qn('a:ea'))
+            if ea is None:
+                from lxml import etree
+                ea = etree.SubElement(rPr, qn('a:ea'))
+            ea.set('typeface', style['ea_font'])
+        except Exception:
+            pass
+
+    # 字号
+    if style.get('size'):
+        run.font.size = style['size']
+
+    # 加粗
+    run.font.bold = style.get('bold')
+
+    # 颜色
+    if style.get('color_rgb'):
+        try:
+            run.font.color.rgb = RGBColor(*bytes.fromhex(style['color_rgb']))
+        except Exception:
+            pass
 
 
 def find_textbox(slide, box_name):
