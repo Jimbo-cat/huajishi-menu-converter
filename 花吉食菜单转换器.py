@@ -689,7 +689,7 @@ def generate_pptx(excel_path, output_path, template_path=None):
             # 蛋类（文本框 51）
             tb51 = find_textbox(slide, '文本框 51')
             if tb51:
-                set_textbox_content(tb51.text_frame, breakfast['蛋类'] if breakfast['蛋类'] else [''], line_spacing_pct=100000)
+                set_textbox_content(tb51.text_frame, breakfast['蛋类'] if breakfast['蛋类'] else [''], line_spacing_pct=150000)
 
             # 西点（文本框 43）
             tb43 = find_textbox(slide, '文本框 43')
