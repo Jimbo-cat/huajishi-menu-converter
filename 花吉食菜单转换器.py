@@ -322,8 +322,136 @@ def set_textbox_content(text_frame, items, line_spacing_pct=None, color_split=No
             p.add_run()
 
 
+def set_textbox_two_column(text_frame, items, line_spacing_pct=None, color_split=None):
+    """
+    两列布局版 set_textbox_content。
+    将 items 两两分组，每组占一个段落，段落内两个 run 分别写两个菜品。
+    奇数项则最后一个段落只有一个 run。
+    color_split: 可选，[(count, style), ...] 逐项（不是逐段）应用样式。
+    """
+    # 先读取模板的段落样式（只读有内容的段落）
+    orig_styles = []
+    empty_style = None
+    for para in text_frame.paragraphs:
+        first_run = para.runs[0] if para.runs else None
+        if first_run:
+            s = _read_run_style(first_run)
+            orig_styles.append(s)
+            if empty_style is None and (s.get('font_name') or s.get('ea_font')):
+                empty_style = s
+        else:
+            orig_styles.append(None)
+
+    if empty_style is None:
+        for para in text_frame.paragraphs:
+            for run in para.runs:
+                s = _read_run_style(run)
+                if s.get('font_name') or s.get('ea_font'):
+                    empty_style = s
+                    break
+            if empty_style:
+                break
+        if empty_style is None and text_frame.paragraphs and text_frame.paragraphs[0].runs:
+            empty_style = _read_run_style(text_frame.paragraphs[0].runs[0])
+
+    if not empty_style:
+        empty_style = {'font_name': None, 'ea_font': None,
+                       'size': None, 'bold': None, 'color_rgb': None, 'scheme_clr': None}
+    if not orig_styles:
+        orig_styles = [empty_style]
+
+    # 清空所有段落，重置
+    for para in text_frame.paragraphs:
+        runs = para.runs
+        if runs:
+            for r in list(runs)[1:]:
+                r._r.getparent().remove(r._r)
+            runs[0].text = ''
+        else:
+            para.add_run()
+
+    # 将 items 两两分组
+    pairs = []
+    for i in range(0, len(items), 2):
+        pair = [items[i]]
+        if i + 1 < len(items):
+            pair.append(items[i + 1])
+        pairs.append(pair)
+
+    # 写入数据
+    for i, pair in enumerate(pairs):
+        if i < len(text_frame.paragraphs):
+            para = text_frame.paragraphs[i]
+            runs = para.runs
+            # 确保有足够的 run
+            needed = len(pair)
+            current = len(runs)
+            if current > needed:
+                for r in list(runs)[needed:]:
+                    r._r.getparent().remove(r._r)
+            elif current < needed:
+                for _ in range(needed - current):
+                    para.add_run()
+            # 清空已有文本
+            for r in para.runs:
+                r.text = ''
+            # 写文本
+            for j, txt in enumerate(pair):
+                para.runs[j].text = str(txt)
+        else:
+            para = text_frame.add_paragraph()
+            for txt in pair:
+                r = para.add_run()
+                r.text = str(txt)
+
+        # 应用样式到每个 run
+        for j in range(len(pair)):
+            run = para.runs[j]
+            # 确定使用哪个样式
+            item_idx = i * 2 + j  # 原始 items 中的索引
+            if color_split:
+                offset = 0
+                selected_style = empty_style
+                for count, split_style in color_split:
+                    if item_idx < offset + count:
+                        selected_style = split_style
+                        break
+                    offset += count
+                _apply_run_style(run, selected_style or empty_style)
+            else:
+                style_idx = min(item_idx, len(orig_styles) - 1)
+                style = orig_styles[style_idx] if orig_styles else empty_style
+                _apply_run_style(run, style or empty_style)
+
+        # 行距
+        if line_spacing_pct is not None:
+            from pptx.oxml.ns import qn
+            pPr = para._p.find(qn('a:pPr'))
+            if pPr is None:
+                pPr = para._p.makeelement(qn('a:pPr'), {})
+                para._p.insert(0, pPr)
+            old_lnSpc = pPr.find(qn('a:lnSpc'))
+            if old_lnSpc is not None:
+                pPr.remove(old_lnSpc)
+            lnSpc = para._p.makeelement(qn('a:lnSpc'), {})
+            spcPct = para._p.makeelement(qn('a:spcPct'), {'val': str(line_spacing_pct)})
+            lnSpc.append(spcPct)
+            pPr.append(lnSpc)
+
+    # 隐藏多余段落
+    for j in range(len(pairs), len(text_frame.paragraphs)):
+        p = text_frame.paragraphs[j]
+        runs = p.runs
+        if runs:
+            for r in list(runs)[1:]:
+                r._r.getparent().remove(r._r)
+            runs[0].text = ''
+        if not p.runs:
+            p.add_run()
+
+
 def _read_run_style(run):
-    """读取 run 的完整样式"""
+    """读取 run 的完整样式（含 scheme 主题色）"""
     from pptx.oxml.ns import qn
     from pptx.dml.color import RGBColor
 
@@ -345,7 +473,7 @@ def _read_run_style(run):
     style['size'] = run.font.size
     style['bold'] = run.font.bold
 
-    # 字体颜色
+    # 显式 RGB 颜色
     color_rgb = None
     try:
         c = run.font.color
@@ -354,6 +482,20 @@ def _read_run_style(run):
     except Exception:
         pass
     style['color_rgb'] = color_rgb
+
+    # 主题色（schemeClr，如 accent2=橙色）
+    scheme_clr = None
+    try:
+        rPr = run._r.find(qn('a:rPr'))
+        if rPr is not None:
+            fill = rPr.find(qn('a:solidFill'))
+            if fill is not None:
+                scheme = fill.find(qn('a:schemeClr'))
+                if scheme is not None:
+                    scheme_clr = scheme.get('val')
+    except Exception:
+        pass
+    style['scheme_clr'] = scheme_clr
 
     return style
 
@@ -386,23 +528,29 @@ def _apply_run_style(run, style):
     # 加粗
     run.font.bold = style.get('bold')
 
-    # 颜色 - 显式设置或清除
+    # 颜色 - 按优先顺序：scheme_clr > color_rgb > 不处理
     if style.get('color_rgb'):
+        # 显式 RGB 颜色
         try:
             run.font.color.rgb = RGBColor(*bytes.fromhex(style['color_rgb']))
         except Exception:
             pass
-    else:
-        # 没有显式颜色 → 清除所有颜色设置（继承父级黑色）
+    elif style.get('scheme_clr'):
+        # 主题色（如 accent2=橙色），写 XML
         try:
-            rPr = run._r.find(qn('a:rPr'))
-            if rPr is not None:
-                # 删除所有颜色填充标签（solidFill / gradFill / noFill 等）
-                for tag in ['a:solidFill', 'a:gradFill', 'a:noFill', 'a:pattFill', 'a:blipFill']:
-                    for elem in list(rPr.findall(qn(tag))):
-                        rPr.remove(elem)
+            from pptx.oxml.ns import qn
+            from lxml import etree
+            rPr = run._r.get_or_add_rPr()
+            # 删除现有 solidFill
+            for old_fill in list(rPr.findall(qn('a:solidFill'))):
+                rPr.remove(old_fill)
+            # 创建 solidFill → schemeClr
+            fill = etree.SubElement(rPr, qn('a:solidFill'))
+            scheme = etree.SubElement(fill, qn('a:schemeClr'))
+            scheme.set('val', style['scheme_clr'])
         except Exception:
             pass
+    # 没有颜色信息 → 保持 run 原有颜色不变
 
 
 def _detect_dual_styles(text_frame):
@@ -418,7 +566,7 @@ def _detect_dual_styles(text_frame):
             t = run.text.strip()
             if t and t != '(empty)':
                 s = _read_run_style(run)
-                # 有显式颜色 vs 无颜色
+                # 有显式颜色 vs 无颜色（tx1/黑色不算"有颜色"）
                 if s.get('color_rgb'):
                     if style_color is None:
                         style_color = s
@@ -485,18 +633,21 @@ def generate_pptx(excel_path, output_path, template_path=None):
             if tb56:
                 set_textbox_content(tb56.text_frame, dry_items[5:] if len(dry_items) > 5 else [''])
 
-            # 湿点（文本框 54）：面档 + 湿点合并，保持面档黑色/湿点紫色
+            # 湿点（文本框 54）：面档 + 湿点合并，两列布局
+            # 面档使用 schemeClr（橙色），湿点使用紫色
             wet_items = breakfast['面档'] + breakfast['湿点']
             tb54 = find_textbox(slide, '文本框 54')
             if tb54 and wet_items:
                 split_styles = _detect_dual_styles(tb54.text_frame)
-                # 面档样式：去掉颜色（黑色/继承），保留字体字号等
-                style_nocolor = {k: v for k, v in split_styles[0].items()}
-                style_nocolor['color_rgb'] = '000000'  # 显式设置为黑色
+                # split_styles[0] = 无颜色样式（黑色），split_styles[1] = 显式紫色
+                # 面档用橙色（accent2），湿点用紫色
+                mian_style = {k: v for k, v in split_styles[0].items()}
+                mian_style['scheme_clr'] = 'accent2'  # 面档用橙色主题色
+                mian_style['color_rgb'] = None         # 清除可能残留的 RGB
                 split_count = len(breakfast['面档'])
-                color_split = [(split_count, style_nocolor),
+                color_split = [(split_count, mian_style),
                                (len(breakfast['湿点']), split_styles[1])]
-                set_textbox_content(tb54.text_frame, wet_items, color_split=color_split)
+                set_textbox_two_column(tb54.text_frame, wet_items, color_split=color_split)
             elif tb54:
                 set_textbox_content(tb54.text_frame, [''])
 
@@ -546,16 +697,10 @@ def generate_pptx(excel_path, output_path, template_path=None):
             if tb49:
                 set_textbox_content(tb49.text_frame, lunch['咸汤'] if lunch['咸汤'] else [''])
 
-            # 面档（文本框 47）
+            # 面档（文本框 47）— 两列布局，保留橙色主题色
             tb47 = find_textbox(slide, '文本框 47')
             if tb47 and lunch['面档']:
-                # 面档保持黑色，不用紫色
-                style_47 = _detect_dual_styles(tb47.text_frame)
-                style_plain = {k: v for k, v in style_47[0].items()}
-                style_plain['color_rgb'] = '000000'
-                all_items = lunch['面档']
-                color_split_47 = [(len(all_items), style_plain)]
-                set_textbox_content(tb47.text_frame, all_items, color_split=color_split_47)
+                set_textbox_two_column(tb47.text_frame, lunch['面档'])
             elif tb47:
                 set_textbox_content(tb47.text_frame, [''])
 
