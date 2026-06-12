@@ -548,8 +548,16 @@ def generate_pptx(excel_path, output_path, template_path=None):
 
             # 面档（文本框 47）
             tb47 = find_textbox(slide, '文本框 47')
-            if tb47:
-                set_textbox_content(tb47.text_frame, lunch['面档'] if lunch['面档'] else [''])
+            if tb47 and lunch['面档']:
+                # 面档保持黑色，不用紫色
+                style_47 = _detect_dual_styles(tb47.text_frame)
+                style_plain = {k: v for k, v in style_47[0].items()}
+                style_plain['color_rgb'] = '000000'
+                all_items = lunch['面档']
+                color_split_47 = [(len(all_items), style_plain)]
+                set_textbox_content(tb47.text_frame, all_items, color_split=color_split_47)
+            elif tb47:
+                set_textbox_content(tb47.text_frame, [''])
 
             # ── 更新晚餐区 ──
             # 主荤（文本框 32）
