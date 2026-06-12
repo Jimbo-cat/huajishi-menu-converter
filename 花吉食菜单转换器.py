@@ -650,33 +650,29 @@ def generate_pptx(excel_path, output_path, template_path=None):
             breakfast, lunch, dinner = extract_day_data(ws_breakfast, ws_lunch, slide_idx)
 
             # ── 更新早餐区 ──
-            # 干点（文本框 19）：前 5 个普通干点项
+            # 干点（文本框 19）：两列布局（模板原就是两列），取前 5 个干点项
             dry_items = breakfast['干点']
             tb19 = find_textbox(slide, '文本框 19')
-            if tb19:
-                set_textbox_content(tb19.text_frame, dry_items[:5] if dry_items else [''])
+            if tb19 and dry_items:
+                set_textbox_two_column(tb19.text_frame, dry_items[:5])
+            elif tb19:
+                set_textbox_content(tb19.text_frame, [''])
 
             # 干点2（文本框 56）：剩余干点（特色项如小笼包/生煎）
             tb56 = find_textbox(slide, '文本框 56')
             if tb56:
-                set_textbox_content(tb56.text_frame, dry_items[5:] if len(dry_items) > 5 else [''])
+                dry_remaining = dry_items[5:] if len(dry_items) > 5 else []
+                set_textbox_content(tb56.text_frame, dry_remaining if dry_remaining else [''])
 
             # 湿点（文本框 54）：面档 + 湿点合并，两列布局
-            # 面档使用 schemeClr（橙色），湿点使用紫色
+            # 统一使用紫色，所有项颜色一致
             wet_items = breakfast['面档'] + breakfast['湿点']
             tb54 = find_textbox(slide, '文本框 54')
             if tb54 and wet_items:
                 split_styles = _detect_dual_styles(tb54.text_frame)
-                # split_styles[0] = 无颜色样式（黑色），split_styles[1] = 显式紫色
-                # 面档用橙色（accent2），湿点用紫色
-                mian_style = {k: v for k, v in split_styles[0].items()}
-                mian_style['scheme_clr'] = 'accent2'  # 面档用橙色主题色
-                mian_style['color_rgb'] = None         # 清除可能残留的 RGB
-                mian_style['lum_mod'] = None           # accent2 不需要 tx1 的亮度修饰
-                mian_style['lum_off'] = None
-                split_count = len(breakfast['面档'])
-                color_split = [(split_count, mian_style),
-                               (len(breakfast['湿点']), split_styles[1])]
+                # 统一使用紫色样式（split_styles[1]），湿点所有项颜色一致
+                uniform_style = split_styles[1]
+                color_split = [(len(wet_items), uniform_style)]
                 set_textbox_two_column(tb54.text_frame, wet_items, color_split=color_split)
             elif tb54:
                 set_textbox_content(tb54.text_frame, [''])
@@ -822,7 +818,7 @@ class MenuConverterApp:
         info_box.insert(tk.END, "使用说明：\n\n")
         info_box.insert(tk.END, "① 点击「浏览…」选择花吉食菜单.xlsx\n\n")
         info_box.insert(tk.END, "② 右侧选择输出目录\n\n")
-        info_box.insert(tk.END, "③ 点击中间「确认生成」按钮\n\n")
+        info_box.insert(tk.END, "③ 点击右侧「确认生成」按钮\n\n")
         info_box.insert(tk.END, "④ 程序会自动生成 5 页 PPTX\n   （周一至周五）")
         info_box.config(state=tk.DISABLED)
 
