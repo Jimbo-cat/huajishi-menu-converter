@@ -125,83 +125,141 @@ def extract_day_data(ws_breakfast, ws_lunch, day_index):
     return breakfast, lunch, dinner
 
 
+def _detect_canonical_style(text_frame):
+    """从文本框检测统一的基准样式（run → paragraph → shape 逐级回退）"""
+    from pptx.oxml.ns import qn
+
+    style = {'font_name': None, 'ea_font': None,
+             'size': None, 'bold': None, 'color_rgb': None}
+
+    # 1. 扫描所有非空 run，找最完整的样式
+    for para in text_frame.paragraphs:
+        for run in para.runs:
+            t = run.text.strip()
+            if t and t != '(empty)':
+                s = _read_run_style(run)
+                # 优先取既有 font_name 又有 ea_font 的，且尽量有显式颜色
+                if s['font_name'] and s['ea_font'] and s['color_rgb']:
+                    style = s
+                    return style  # 最完整：字体+东亚+颜色全有
+                if s['font_name'] and s['ea_font']:
+                    # 如果首次遇到带完整字体的，先记下来
+                    if not (style.get('font_name') and style.get('ea_font')):
+                        style = {**style, **{k: v for k, v in s.items() if v is not None}}
+                elif s['font_name'] or s['ea_font']:
+                    if not style.get('font_name') and not style.get('ea_font'):
+                        style = {**style, **{k: v for k, v in s.items() if v is not None}}
+
+    # 2. run 级别不够 → 检查段落默认样式 (defRPr)
+    for para in text_frame.paragraphs:
+        pPr = para._p.find(qn('a:pPr'))
+        if pPr is not None:
+            defRPr = pPr.find(qn('a:defRPr'))
+            if defRPr is not None:
+                if not style['font_name']:
+                    style['font_name'] = defRPr.get('sz', {}).get('typeface')
+                    # Actually sz is the size attribute, let me check
+                if not style['ea_font']:
+                    ea = defRPr.find(qn('a:ea'))
+                    if ea is not None:
+                        style['ea_font'] = ea.get('typeface')
+                if not style['size']:
+                    sz = defRPr.get('sz')
+                    if sz:
+                        try:
+                            from pptx.util import Pt
+                            style['size'] = Pt(int(sz) / 100)
+                        except:
+                            pass
+                if not style['bold']:
+                    b = defRPr.get('b')
+                    if b:
+                        style['bold'] = b == '1' or b == 'true'
+
+    # 3. 如果还没有，检查父级 txBody 下的默认段落样式
+    if not style['font_name'] and not style['ea_font']:
+        try:
+            txBody = text_frame._txBody
+            for lvl in range(1, 10):
+                lvl_pPr = txBody.find(qn(f'a:lvl{lvl}pPr'))
+                if lvl_pPr is not None:
+                    defRPr = lvl_pPr.find(qn('a:defRPr'))
+                    if defRPr is not None:
+                        if not style['ea_font']:
+                            ea = defRPr.find(qn('a:ea'))
+                            if ea is not None:
+                                style['ea_font'] = ea.get('typeface')
+                        break
+        except:
+            pass
+
+    return style
+
+
 def set_textbox_content(text_frame, items):
     """
     替换文本框内容，保留原有字体/字号/颜色/加粗/东亚字体。
     items: 字符串列表，每个元素成为新的一行（段落）。
-    策略：模板的每个段落原本可能有不同颜色，逐个段落读取其样式并保留。
+    整个文本框统一使用同一个样式（从首个非空 run 检测）。
     """
-    from pptx.oxml.ns import qn
-    from pptx.dml.color import RGBColor
+    # 检测统一的基准样式
+    style = _detect_canonical_style(text_frame)
 
-    # 先扫描模板各段落，记录每个段落的原始样式
-    orig_styles = []
-    for para in text_frame.paragraphs:
-        r = para.runs[0] if para.runs else None
-        if r and r.text.strip():
-            # 有内容的段落 - 读取其样式
-            style = _read_run_style(r)
-            orig_styles.append(style)
-        elif r:
-            # 空白段落 - 也读取，但标记为空白
-            style = _read_run_style(r)
-            orig_styles.append(style)
-        else:
-            orig_styles.append(None)
-
-    # 如果没有扫描到任何样式，用第一个段落（即使空白）
-    if not orig_styles:
+    # 如果还是没有，用第一个段落（即使空白）的样式
+    if not style.get('font_name') and not style.get('ea_font'):
         for para in text_frame.paragraphs:
             if para.runs:
-                orig_styles.append(_read_run_style(para.runs[0]))
-            else:
-                para.add_run()
-                orig_styles.append(_read_run_style(para.runs[0]))
+                s = _read_run_style(para.runs[0])
+                if s.get('font_name') or s.get('ea_font'):
+                    style = s
+                    break
 
-    # 如果还是没样式，加一个默认样式
-    if not orig_styles:
-        para = text_frame.add_paragraph()
-        para.add_run()
-        orig_styles.append({'font_name': None, 'ea_font': None,
-                           'size': None, 'bold': None, 'color_rgb': None})
-
-    # ── 写入内容 ──
-    # 清空现有段落
+    # 清空所有段落
     for para in text_frame.paragraphs:
-        for run in para.runs:
-            run.text = ''
+        # 只保留第一个 run，删除多余的（避免残留颜色）
+        runs = para.runs
+        if runs:
+            for r in list(runs)[1:]:
+                r._r.getparent().remove(r._r)
+            runs[0].text = ''
+        else:
+            para.add_run()
 
-    current_para_idx = 0
+    # 写入内容
     for i, item in enumerate(items):
         # 获取或创建段落
         if i < len(text_frame.paragraphs):
             para = text_frame.paragraphs[i]
-            # 清空此段落
-            for r in para.runs:
-                r.text = ''
+            # 只保留第一个 run，删除多余的
+            runs = para.runs
+            if len(runs) > 1:
+                for r in list(runs)[1:]:
+                    r._r.getparent().remove(r._r)
+            if runs:
+                run = runs[0]
+                run.text = ''
+            else:
+                run = para.add_run()
         else:
             para = text_frame.add_paragraph()
+            if not para.runs:
+                para.add_run()
+            run = para.runs[0]
 
-        # 确保至少有一个 run
-        if not para.runs:
-            para.add_run()
-
-        # 用第一个 run 来写文本
-        run = para.runs[0]
+        # 写文本
         run.text = str(item)
 
-        # 应用样式：优先用对应段落的原始样式，如果越界则用最后一个
-        style_idx = min(i, len(orig_styles) - 1) if orig_styles else 0
-        style = orig_styles[style_idx] if style_idx < len(orig_styles) else orig_styles[-1]
-        if style:
-            _apply_run_style(run, style)
+        # 统一应用样式
+        _apply_run_style(run, style)
 
-    # 隐藏多余的段落（清空但不删除，保持段落结构）
+    # 隐藏多余段落
     for j in range(len(items), len(text_frame.paragraphs)):
         p = text_frame.paragraphs[j]
-        for r in p.runs:
-            r.text = ''
-        # 确保每个多余段落至少有一个空 run
+        runs = p.runs
+        if runs:
+            for r in list(runs)[1:]:
+                r._r.getparent().remove(r._r)
+            runs[0].text = ''
         if not p.runs:
             p.add_run()
 
