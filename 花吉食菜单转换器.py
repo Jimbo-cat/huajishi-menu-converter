@@ -775,6 +775,7 @@ class MenuConverterApp:
         self.excel_path = tk.StringVar()
         self.output_dir = tk.StringVar(value=DEFAULT_OUTPUT_DIR)
         self.template_path = tk.StringVar(value=TEMPLATE_PATH)
+        self.filename_var = tk.StringVar(value="花吉食菜单yyyy-mm-dd.pptx")
 
         self._build_ui()
         self._center_window()
@@ -843,11 +844,11 @@ class MenuConverterApp:
         self.out_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(out_frame, text="浏览…", command=self._browse_output).pack(side=tk.RIGHT, padx=(5, 0))
 
-        # 文件名预览
+        # 输出文件名（可编辑）
         ttk.Label(right_frame, text="输出文件名：", font=('PingFang SC', 10)).pack(anchor=tk.W, pady=(0, 5))
-        filename = f"花吉食菜单_{(datetime.now().strftime('%Y%m%d'))}.pptx"
-        self.filename_label = ttk.Label(right_frame, text=filename, font=('PingFang SC', 9), foreground='#666666')
-        self.filename_label.pack(anchor=tk.W, pady=(0, 20))
+        self.filename_entry = ttk.Entry(right_frame, textvariable=self.filename_var,
+                                        width=30, font=('PingFang SC', 9))
+        self.filename_entry.pack(anchor=tk.W, pady=(0, 20), fill=tk.X)
 
         # 状态输出
         ttk.Label(right_frame, text="生成状态：", font=('PingFang SC', 10)).pack(anchor=tk.W, pady=(0, 5))
@@ -930,10 +931,20 @@ class MenuConverterApp:
         if not tpl:
             tpl = TEMPLATE_PATH
 
-        # 构造输出文件名
-        now = datetime.now()
-        filename = f"花吉食菜单_{now.strftime('%Y%m%d')}.pptx"
-        output_path = os.path.join(out_dir, filename)
+        # 解析文件名：替换 yyyy-mm-dd 为当前日期
+        raw_name = self.filename_var.get().strip()
+        if not raw_name:
+            raw_name = "花吉食菜单yyyy-mm-dd.pptx"
+        today = datetime.now().strftime("%Y-%m-%d")
+        resolved_name = raw_name.replace("yyyy-mm-dd", today)
+        if not resolved_name.endswith('.pptx'):
+            resolved_name += '.pptx'
+        output_path = os.path.join(out_dir, resolved_name)
+
+        # 文件已存在 → 弹窗确认
+        if os.path.exists(output_path):
+            if not self._confirm_overwrite(resolved_name):
+                return
 
         # 执行转换
         self._set_status("正在生成中，请稍候…")
@@ -941,6 +952,42 @@ class MenuConverterApp:
 
         success, msg = generate_pptx(excel, output_path, template_path=tpl)
         self._set_status(msg, is_error=not success)
+
+    def _confirm_overwrite(self, filename):
+        """自定义确认弹窗，返回 True=覆盖并生成, False=取消"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("文件已存在")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.update_idletasks()
+
+        # 居中
+        px = self.root.winfo_x() + (self.root.winfo_width() - 380) // 2
+        py = self.root.winfo_y() + (self.root.winfo_height() - 150) // 2
+        dialog.geometry(f"380x150+{px}+{py}")
+
+        frame = ttk.Frame(dialog, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="该文件名已存在，请确定是否继续生成？",
+                  font=('PingFang SC', 11), wraplength=340).pack(pady=(0, 5))
+        ttk.Label(frame, text=filename, font=('PingFang SC', 9, 'bold'),
+                  foreground='#333333').pack(pady=(0, 15))
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack()
+
+        result = [False]
+        ttk.Button(btn_frame, text="覆盖并生成",
+                   command=lambda: [result.__setitem__(0, True), dialog.destroy()]
+                  ).pack(side=tk.LEFT, padx=12)
+        ttk.Button(btn_frame, text="取消",
+                   command=dialog.destroy
+                  ).pack(side=tk.LEFT, padx=12)
+
+        self.root.wait_window(dialog)
+        return result[0]
 
 
 def main():
